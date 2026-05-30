@@ -1,0 +1,13 @@
+[browser]
+# Disable usage statistics gathering and reporting
+# This is a learning tool; we don't want to send telemetry.
+gatherUsageStats = false
+
+[theme]
+# Base theme settings that complement your custom CSS
+base = "light"
+primaryColor = "#1a8a7a"
+backgroundColor = "#faf7f2"
+secondaryBackgroundColor = "#ffffff"
+textColor = "#2d2a24"
+font = "sans serif"
