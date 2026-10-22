@@ -9,6 +9,7 @@ from engine import (
     JournalEntryLine,
     ScenarioResult,
     LENS_DEFINITIONS,
+    grade_answers,
 )
 
 st.set_page_config(page_title="The Dual-Perspective Simulator", page_icon="📊", layout="wide")
@@ -748,18 +749,20 @@ def init_state() -> None:
             "attempted": 0,
             "correct_financial": 0,
             "correct_lens": 0,
+            "correct_practice": 0,
+            "covered": [],
             "perfect": 0,
             "streak": 0,
             "best_streak": 0,
             "lens_results": {l: {"correct": 0, "total": 0} for l in LENS_OPTIONS},
         }
-    if "stats_recorded_for" not in st.session_state:
-        st.session_state.stats_recorded_for = None
+    if "submission" not in st.session_state:
+        st.session_state.submission = None
 
 
 def format_money(value: float) -> str:
     sign = "-" if value < 0 else ""
-    return f"{sign}${abs(value):,.0f}"
+    return f"{sign}${abs(value):,.2f}"
 
 
 def net_income_direction(value: float) -> str:
@@ -877,6 +880,11 @@ def render_step_indicator(current_step: int) -> None:
 
 def render_guess_section(scenario: ScenarioResult) -> Tuple[str, str, str, str]:
     focal = scenario.focal_account
+    locked = st.session_state.submission is not None
+    submitted = st.session_state.submission["answers"] if locked else {}
+
+    def selected_index(options: list, answer_key: str):
+        return options.index(submitted[answer_key]) if locked else None
 
     st.markdown(
         """<div class="section-header"><div class="section-number">2</div><div class="section-title">Your Guess</div></div>""",
@@ -890,16 +898,12 @@ def render_guess_section(scenario: ScenarioResult) -> Tuple[str, str, str, str]:
         st.caption("Financial Accounting / External Reporting")
 
         if scenario.is_decision_scenario:
-            st.markdown(
-                '<div class="decision-notice"><strong>⚠️ Heads up:</strong> This scenario describes a business situation, '
-                "not necessarily a completed transaction.</div>",
-                unsafe_allow_html=True,
-            )
             entry_guess = st.selectbox(
                 "Does this event generate a journal entry today?",
                 ["Yes — a transaction has occurred", "No — this is a decision, not yet a transaction"],
-                index=0,
-                key="entry_exists_guess",
+                index=selected_index(["Yes — a transaction has occurred", "No — this is a decision, not yet a transaction"], "entry"),
+                disabled=locked,
+                key="entry_exists_guess_submitted" if locked else "entry_exists_guess",
             )
             direction_guess = "N/A"
             increases_guess = "N/A"
@@ -919,11 +923,11 @@ def render_guess_section(scenario: ScenarioResult) -> Tuple[str, str, str, str]:
             gcols = st.columns(2)
             with gcols[0]:
                 direction_guess = st.selectbox(
-                    "Debited or Credited?", ["Debit", "Credit"], key="direction_guess"
+                    "Debited or Credited?", ["Debit", "Credit"], index=selected_index(["Debit", "Credit"], "direction"), disabled=locked, key="direction_guess_submitted" if locked else "direction_guess"
                 )
             with gcols[1]:
                 increases_guess = st.selectbox(
-                    "Increases or Decreases?", ["Increases", "Decreases"], key="increases_guess"
+                    "Increases or Decreases?", ["Increases", "Decreases"], index=selected_index(["Increases", "Decreases"], "movement"), disabled=locked, key="increases_guess_submitted" if locked else "increases_guess"
                 )
 
     with fin_col2:
@@ -939,11 +943,16 @@ def render_guess_section(scenario: ScenarioResult) -> Tuple[str, str, str, str]:
                 )
 
         lens_guess = st.selectbox(
-            "Which managerial lens applies?",
+            scenario.lens_prompt,
             LENS_OPTIONS,
-            key="lens_guess",
+            index=selected_index(LENS_OPTIONS, "lens"),
+            disabled=locked,
+            key="lens_guess_submitted" if locked else "lens_guess",
         )
 
+    if scenario.practice:
+        st.number_input(scenario.practice.prompt, value=submitted.get("practice"), step=1.0, format="%.2f",
+                        disabled=locked, key="practice_guess_submitted" if locked else "practice_guess")
     return direction_guess, increases_guess, entry_guess, lens_guess
 
 
@@ -956,8 +965,6 @@ def render_guess_feedback(
 ) -> None:
     focal = scenario.focal_account
     correct_lens = scenario.managerial.primary_metric
-    stats = st.session_state.stats
-    key = scenario.scenario_key
 
     st.markdown(
         """<div class="section-header"><div class="section-number completed">✓</div><div class="section-title">Feedback</div></div>""",
@@ -1019,47 +1026,61 @@ def render_guess_feedback(
                 unsafe_allow_html=True,
             )
 
-    if lens_guess == correct_lens:
+    if lens_guess in (correct_lens, *scenario.secondary_lenses):
         lens_correct = True
         st.markdown(
             f'<div class="feedback-card feedback-good fade-in"><div class="feedback-icon">✓</div>'
-            f'<div class="feedback-content"><strong>Correct lens</strong> — {correct_lens}.</div></div>',
+            f'<div class="feedback-content"><strong>Valid lens</strong> — {lens_guess}. {LENS_DEFINITIONS[lens_guess]} The worked analysis emphasizes {correct_lens}.</div></div>',
             unsafe_allow_html=True,
         )
     else:
         st.markdown(
             f'<div class="feedback-card feedback-learn fade-in"><div class="feedback-icon">✗</div>'
-            f'<div class="feedback-content">The primary lens here is <strong>{correct_lens}</strong>, not {lens_guess}. '
+            f'<div class="feedback-content">The worked analysis emphasizes <strong>{correct_lens}</strong>. '
             f"{LENS_DEFINITIONS[correct_lens]}</div></div>",
             unsafe_allow_html=True,
         )
 
-    if financial_correct and lens_correct:
+    practice_correct = st.session_state.submission["grade"]["practice"]
+    if scenario.practice:
+        if practice_correct:
+            st.success("Correct calculation.")
+        else:
+            st.info(f"Your answer: {format_money(st.session_state.submission['answers']['practice'])}. "
+                    f"Worked answer: {format_money(scenario.practice.answer)}.")
+        st.write(scenario.practice.explanation)
+        st.caption(f"Worked result: {format_money(scenario.practice.answer)}. "
+                   "Amounts are before tax; assumptions and comparison periods are stated in the analysis.")
+
+    if financial_correct and lens_correct and practice_correct:
         st.markdown(
             '<div class="feedback-card feedback-perfect fade-in"><div class="feedback-icon">🎯</div>'
             '<div class="feedback-content"><strong>Perfect!</strong> You nailed both the financial and managerial '
-            "perspectives.</div></div>",
+            "perspectives and the calculation.</div></div>",
             unsafe_allow_html=True,
         )
 
-    if key != st.session_state.stats_recorded_for:
-        stats["attempted"] += 1
-        if financial_correct:
-            stats["correct_financial"] += 1
-        if lens_correct:
-            stats["correct_lens"] += 1
-        if financial_correct and lens_correct:
-            stats["perfect"] += 1
-            stats["streak"] += 1
-            if stats["streak"] > stats["best_streak"]:
-                stats["best_streak"] = stats["streak"]
-        else:
-            stats["streak"] = 0
-        if lens_guess in stats["lens_results"]:
-            stats["lens_results"][lens_guess]["total"] += 1
-            if lens_guess == correct_lens:
-                stats["lens_results"][lens_guess]["correct"] += 1
-        st.session_state.stats_recorded_for = key
+def record_submission(scenario: ScenarioResult, answers: dict) -> None:
+    """Freeze and score an attempt before the next render, including the sidebar."""
+    if st.session_state.submission is not None:
+        return
+    grade = grade_answers(scenario, answers)
+    st.session_state.submission = {"answers": dict(answers), "grade": grade}
+    stats = st.session_state.stats
+    stats["attempted"] += 1
+    stats["correct_financial"] += int(grade["financial"])
+    stats["correct_lens"] += int(grade["lens"])
+    stats["correct_practice"] += int(grade["practice"])
+    perfect = all(grade.values())
+    stats["perfect"] += int(perfect)
+    stats["streak"] = stats["streak"] + 1 if perfect else 0
+    stats["best_streak"] = max(stats["best_streak"], stats["streak"])
+    lens_stats = stats["lens_results"][scenario.managerial.primary_metric]
+    lens_stats["total"] += 1
+    lens_stats["correct"] += int(grade["lens"])
+    if scenario.scenario_key not in stats["covered"]:
+        stats["covered"].append(scenario.scenario_key)
+
 
 
 def render_sidebar_stats() -> None:
@@ -1084,6 +1105,8 @@ def render_sidebar_stats() -> None:
         ("Attempted", str(attempted), ""),
         ("Financial Accuracy", f"{financial_acc}%", "good" if financial_acc >= 70 else ""),
         ("Lens Accuracy", f"{lens_acc}%", "good" if lens_acc >= 70 else ""),
+        ("Calculation Accuracy", f"{round(stats['correct_practice'] / attempted * 100) if attempted else 0}%", ""),
+        ("Topics Practiced", f"{len(stats['covered'])}/14", ""),
         ("Perfect Answers", f"{perfect_acc}%", "teal" if perfect_acc >= 50 else ""),
         ("Best Streak", str(stats["best_streak"]), "teal" if stats["best_streak"] >= 3 else ""),
     ]
@@ -1095,6 +1118,9 @@ def render_sidebar_stats() -> None:
             unsafe_allow_html=True,
         )
     st.markdown("</div>", unsafe_allow_html=True)
+    with st.expander("Topic coverage"):
+        for topic_key, title in AccountingScenarioEngine.SCENARIO_CATALOG.items():
+            st.write(f"{'✓' if topic_key in stats['covered'] else '○'} {title}")
 
     st.markdown('<div style="font-size:0.75rem;color:var(--text-dim);margin-top:0.5rem;">'
                 "Session stats reset when you reload the page.</div>", unsafe_allow_html=True)
@@ -1126,10 +1152,19 @@ def main() -> None:
             unsafe_allow_html=True,
         )
 
+        topic = st.selectbox("Practice topic", [None, *AccountingScenarioEngine.SCENARIO_CATALOG],
+            format_func=lambda key: "Random topic" if key is None else AccountingScenarioEngine.SCENARIO_CATALOG[key],
+            key="topic_filter")
+        st.caption("Practice uses simplified U.S. GAAP examples, before tax. Cash effects cover only the stated event.")
+        with st.expander("Accounting assumptions"):
+            st.write("Timing exercises treat wages and depreciation as period expenses; full manufacturing overhead allocation is outside their scope. Revenue-only previews omit delivery costs unless supplied. Inventory-sale previews may show only the cost component. Future results are conditional on the events described. Annual savings compare alternatives; they are not total company cash flow.")
         if st.button("✦ Generate New Scenario", use_container_width=True):
-            st.session_state.scenario = st.session_state.engine.generate_scenario()
+            st.session_state.scenario = st.session_state.engine.generate_scenario(topic)
+            st.session_state.submission = None
+            for guess_key in ("direction_guess", "increases_guess", "entry_exists_guess", "lens_guess", "practice_guess"):
+                st.session_state.pop(guess_key, None)
+                st.session_state.pop(guess_key + "_submitted", None)
             st.session_state.reveal = False
-            st.session_state.stats_recorded_for = None
 
         st.divider()
 
@@ -1167,7 +1202,7 @@ def main() -> None:
 
     st.markdown(
         f"""<div class="card-scenario">
-            <span class="lens-badge {lens_color}">{lens_emoji} {scenario.managerial.primary_metric}</span>
+            {f'<span class="lens-badge {lens_color}">{lens_emoji} {scenario.managerial.primary_metric}</span>' if is_revealed else ""}
             <div class="scenario-title">{scenario.title}</div>
             <div class="scenario-text">{scenario.scenario_text}</div>
         </div>""",
@@ -1181,11 +1216,20 @@ def main() -> None:
     if not is_revealed:
         reveal_clicked = st.button("Reveal Analysis", type="primary", use_container_width=True)
         if reveal_clicked:
-            st.session_state.reveal = True
-            st.rerun()
+            answers = {"direction": direction_guess, "movement": increases_guess,
+                       "entry": entry_guess, "lens": lens_guess,
+                       "practice": st.session_state.get("practice_guess")}
+            required = [entry_guess, lens_guess, answers["practice"]] if scenario.is_decision_scenario else [direction_guess, increases_guess, lens_guess, answers["practice"]]
+            if any(value is None for value in required):
+                st.warning("Answer each question before revealing the analysis.")
+            else:
+                record_submission(scenario, answers)
+                st.session_state.reveal = True
+                st.rerun()
 
     if st.session_state.reveal:
-        render_guess_feedback(scenario, direction_guess, increases_guess, entry_guess, lens_guess)
+        submitted = st.session_state.submission["answers"]
+        render_guess_feedback(scenario, submitted["direction"], submitted["movement"], submitted["entry"], submitted["lens"])
 
         st.markdown(
             """<div class="section-header" style="margin-top:1.5rem;"><div class="section-number completed">✓</div>"""
@@ -1213,18 +1257,19 @@ def main() -> None:
             ni_today = scenario.financial.today_net_income_impact
             direction_today = net_income_direction(ni_today)
             st.markdown(
-                f'<div class="metric-highlight">Net Income: {format_money(ni_today)}</div>',
+                f'<div class="metric-highlight">Income effect (before tax): {format_money(ni_today)}</div>',
                 unsafe_allow_html=True,
             )
             st.markdown(f'<div style="font-size:0.85rem;color:var(--text-muted);margin-bottom:1rem;">{direction_today} &mdash; {scenario.financial.today_summary}</div>', unsafe_allow_html=True)
 
-            if scenario.financial.future_journal_preview:
-                st.markdown("**Future Period**")
-                render_journal_table(scenario.financial.future_journal_preview)
+            if scenario.financial.future_summary:
+                st.markdown(f"**{scenario.financial.future_period}**")
+                if scenario.financial.future_journal_preview:
+                    render_journal_table(scenario.financial.future_journal_preview)
                 ni_future = scenario.financial.future_net_income_impact
-                direction_future = net_income_direction(ni_future)
+                direction_future = net_income_direction(ni_future) if ni_future is not None else "Undetermined"
                 st.markdown(
-                    f'<div class="metric-highlight">Net Income: {format_money(ni_future)}</div>',
+                    f'<div class="metric-highlight">Income effect (before tax): {format_money(ni_future) if ni_future is not None else "Cannot determine from the stated facts"}</div>',
                     unsafe_allow_html=True,
                 )
                 st.markdown(f'<div style="font-size:0.85rem;color:var(--text-muted);">{direction_future} &mdash; {scenario.financial.future_summary}</div>', unsafe_allow_html=True)
@@ -1259,7 +1304,7 @@ def main() -> None:
                 unsafe_allow_html=True,
             )
             st.markdown(
-                f'<div style="margin-bottom:0.75rem;"><strong>Cash Flow Future:</strong> <span style="font-family:Space Grotesk,sans-serif;font-weight:600;color:{"var(--accent-coral)" if cf_future < 0 else "var(--accent-green)"};">{format_money(cf_future)}</span></div>',
+                f'<div style="margin-bottom:0.75rem;"><strong>{scenario.managerial.future_cash_label}:</strong> <span style="font-family:Space Grotesk,sans-serif;font-weight:600;color:{"var(--accent-coral)" if cf_future < 0 else "var(--accent-green)"};">{format_money(cf_future)}</span></div>',
                 unsafe_allow_html=True,
             )
             st.markdown(

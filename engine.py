@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import random
 from typing import Callable, Dict, List, Optional
 
@@ -57,8 +57,9 @@ class FinancialImpact:
     today_net_income_impact: float
     today_summary: str
     future_journal_preview: List[JournalEntryLine]
-    future_net_income_impact: float
+    future_net_income_impact: Optional[float]
     future_summary: str
+    future_period: str = "Future event described below"
 
 
 @dataclass(frozen=True)
@@ -69,6 +70,14 @@ class ManagerialImpact:
     cash_flow_today: float
     cash_flow_future: float
     decision_note: str
+    future_cash_label: str = "Future cash effect of this event"
+
+
+@dataclass(frozen=True)
+class PracticeQuestion:
+    prompt: str
+    answer: float
+    explanation: str
 
 
 @dataclass(frozen=True)
@@ -81,6 +90,9 @@ class ScenarioResult:
     financial: FinancialImpact
     managerial: ManagerialImpact
     misconception_note: str
+    practice: Optional[PracticeQuestion] = None
+    lens_prompt: str = "Which lens best explains the management issue described?"
+    secondary_lenses: tuple[str, ...] = ()
 
 
 # ---------------------------------------------------------------------------
@@ -92,34 +104,153 @@ class AccountingScenarioEngine:
 
     def __init__(self, seed: Optional[int] = None) -> None:
         self._rng = random.Random(seed)
-        self._scenario_builders: List[Callable[[], ScenarioResult]] = [
-            # Cash vs. Accrual Timing (5)
-            self._prepaid_insurance,
-            self._depreciation,
-            self._credit_sale,
-            self._unearned_revenue,
-            self._accrued_wages,
-            # Working Capital & Liquidity (2)
-            self._inventory_purchase,
-            self._early_payment_discount,
-            # Incremental Analysis (3)
-            self._allowance_for_doubtful_accounts,
-            self._special_order_decision,
-            self._make_vs_buy,
-            # Cost Behavior (3)
-            self._r_and_d_spend,
-            self._automation_tradeoff,
-            self._volume_increase,
-            # Deferred subscription kept as Cash vs. Accrual Timing
-            self._deferred_revenue_subscription,
-        ]
+        self._scenario_builders: Dict[str, Callable[[], ScenarioResult]] = {
+            "prepaid_insurance": self._prepaid_insurance,
+            "depreciation": self._depreciation,
+            "credit_sale": self._credit_sale,
+            "unearned_revenue": self._unearned_revenue,
+            "accrued_wages": self._accrued_wages,
+            "inventory_purchase": self._inventory_purchase,
+            "early_payment_discount": self._early_payment_discount,
+            "allowance_doubtful": self._allowance_for_doubtful_accounts,
+            "special_order": self._special_order_decision,
+            "make_vs_buy": self._make_vs_buy,
+            "r_and_d": self._r_and_d_spend,
+            "automation_tradeoff": self._automation_tradeoff,
+            "volume_increase": self._volume_increase,
+            "deferred_subscription": self._deferred_revenue_subscription,
+        }
 
-    def generate_scenario(self) -> ScenarioResult:
-        builder = self._rng.choice(self._scenario_builders)
-        return builder()
+    SCENARIO_CATALOG = {
+        "prepaid_insurance": "Prepaid Insurance",
+        "depreciation": "Machine Purchase and Depreciation",
+        "credit_sale": "Credit Sale",
+        "unearned_revenue": "Cash Received Before Service",
+        "accrued_wages": "Accrued Wages",
+        "inventory_purchase": "Inventory Purchase on Credit",
+        "early_payment_discount": "Early Payment Discount",
+        "allowance_doubtful": "Bad Debt Estimate",
+        "special_order": "Special Order Decision",
+        "make_vs_buy": "Make vs. Buy Decision",
+        "r_and_d": "R&D Spend — Sunk Cost",
+        "automation_tradeoff": "Automation — Fixed vs. Variable Cost Tradeoff",
+        "volume_increase": "Production Volume Increase — Fixed Cost Dilution",
+        "deferred_subscription": "Multi-Period Subscription",
+    }
+
+    def generate_scenario(self, scenario_key: Optional[str] = None) -> ScenarioResult:
+        """Generate a topic or draw one randomly, then vary the focal journal account."""
+        builders = self._scenario_builders
+        if scenario_key is not None and scenario_key not in builders:
+            raise ValueError(f"Unknown scenario: {scenario_key}")
+        builder = builders[scenario_key] if scenario_key else self._rng.choice(list(builders.values()))
+        scenario = builder()
+        if not scenario.is_decision_scenario:
+            line = self._rng.choice(scenario.financial.today_journal_entry)
+            debit_normal = line.account_type in {"Asset", "Expense", "Contra-Liability"}
+            increases = (line.direction == "Debit") == debit_normal
+            scenario = replace(scenario, focal_account=FocalAccount(
+                line.account, line.account_type, line.direction, increases,
+                f"{line.account} is a {line.account_type.lower()} account. "
+                f"This event {'increases' if increases else 'decreases'} its balance; "
+                f"record that movement with a {line.direction.lower()}.",
+            ))
+        return self._add_practice(scenario)
+
+    def _add_practice(self, scenario: ScenarioResult) -> ScenarioResult:
+        key = scenario.scenario_key
+        fin = scenario.financial
+        mgr = scenario.managerial
+        periods = {
+            "prepaid_insurance": "Each month of coverage",
+            "depreciation": "Each full year of use",
+            "credit_sale": "Collection in approximately 60 days",
+            "unearned_revenue": "Each service month starting next month",
+            "accrued_wages": "Next payday",
+            "inventory_purchase": "When this inventory is sold (cost component only)",
+            "early_payment_discount": "When discounted inventory is sold (cost component only)",
+            "allowance_doubtful": "When estimated uncollectible balances are written off",
+            "special_order": "If this one-time order is accepted and fulfilled",
+            "make_vs_buy": "Annual change versus continuing in-house production",
+            "r_and_d": "Subsequent development decision",
+            "automation_tradeoff": "Annual change versus manual operation at assumed output",
+            "volume_increase": "If additional units are produced and sold",
+            "deferred_subscription": "Each service month",
+        }
+        cash_labels = {
+            "prepaid_insurance": "Additional cash for this paid policy during coverage",
+            "depreciation": "Additional purchase cash during useful life (operating costs excluded)",
+            "credit_sale": "Customer collection in approximately 60 days",
+            "unearned_revenue": "Additional receipts for this prepaid agreement (delivery costs excluded)",
+            "accrued_wages": "Cash payment next payday",
+            "inventory_purchase": "Supplier payment in 30 days (sale proceeds excluded)",
+            "early_payment_discount": "Further cash to settle this invoice",
+            "allowance_doubtful": "Cash movement on write-off (collection shortfall shown above)",
+            "special_order": "Net cash over the fulfilled order: receipts less variable cash costs",
+            "make_vs_buy": "Annual cash savings from outsourcing versus making (cash-cost assumption)",
+            "r_and_d": "Further cash from today's research payment (new projects excluded)",
+            "automation_tradeoff": "Annual labor cash savings at assumed output (other costs excluded)",
+            "volume_increase": "Additional production cash costs (sales receipts unknown)",
+            "deferred_subscription": "Additional subscription receipts (delivery costs excluded)",
+        }
+        question = PracticeQuestion(
+            "What is today's net cash movement from this event? Enter dollars; use a minus sign for an outflow.",
+            mgr.cash_flow_today,
+            "Add cash receipts and subtract cash payments today; recognition of income or expense alone does not move cash.",
+        )
+        if key in {"prepaid_insurance", "depreciation", "unearned_revenue", "deferred_subscription"}:
+            amount = abs(fin.future_net_income_impact)
+            label = "annual depreciation expense" if key == "depreciation" else "monthly insurance expense" if key == "prepaid_insurance" else "monthly earned revenue"
+            question = PracticeQuestion(f"Calculate the {label}, in dollars (enter a positive amount).", amount,
+                "Divide the upfront amount by the stated number of years or months; the future journal below shows the allocation.")
+        elif key in {"special_order", "make_vs_buy", "automation_tradeoff"}:
+            prompts = {
+                "special_order": "Calculate incremental profit if the order is accepted. Enter dollars; a negative answer supports rejection on the stated assumptions.",
+                "make_vs_buy": "Calculate annual savings from buying rather than making. Enter dollars; a negative answer favors making on cost alone.",
+                "automation_tradeoff": "Calculate the annual operating-income change: labor saved less depreciation. Enter dollars; use a minus sign for a reduction.",
+            }
+            explanations = {
+                "special_order": "Units × (offer price − variable cost per unit). Unchanged fixed costs cancel; accept for positive contribution, reject for negative contribution, and be indifferent at zero on financial grounds alone.",
+                "make_vs_buy": "Annual units × internal variable cost + avoidable fixed cost − annual units × supplier price. Unavoidable fixed costs cancel.",
+                "automation_tradeoff": "Annual labor saving − (equipment cost ÷ useful life), assuming straight-line depreciation and zero salvage value.",
+            }
+            question = PracticeQuestion(prompts[key], fin.future_net_income_impact, explanations[key])
+        elif key == "credit_sale":
+            question = PracticeQuestion("Calculate today's profit on this sale before other expenses and tax, in dollars.",
+                fin.today_net_income_impact, "Sales revenue − product cost. The receivable creates income before collection; collecting it later does not create a second profit.")
+        elif key == "accrued_wages":
+            question = PracticeQuestion("What is the cash movement next payday to settle these wages? Enter an outflow as a negative dollar amount.",
+                mgr.cash_flow_future, "Pay the wages already accrued: debit Wages Payable and credit Cash. The expense was recognized in the current period.")
+        elif key == "inventory_purchase":
+            question = PracticeQuestion("How much cash must be reserved to pay this supplier in 30 days? Enter a positive dollar amount.",
+                -mgr.cash_flow_future, "The invoice amount becomes a supplier payment in 30 days, whether or not the inventory has sold by then.")
+        elif key == "early_payment_discount":
+            question = PracticeQuestion("Calculate the cash saved by paying this invoice early, in dollars (positive amount).",
+                fin.today_journal_entry[-1].amount, "Invoice amount × discount rate. Cash paid is invoice amount minus the discount; reduce the unsold inventory's cost by the same discount.")
+        elif key == "r_and_d":
+            question = PracticeQuestion("How much of today's research payment is a relevant future cost for next quarter's go/no-go decision? Enter dollars.",
+                0, "Zero: the payment is already sunk. Compare future incremental costs and benefits; do not add the research payment again.")
+        elif key == "allowance_doubtful":
+            question = PracticeQuestion("How much cash leaves the company when these receivables are written off? Enter dollars.", 0,
+                "None: debit the allowance and credit receivables. Expected collections fall, but there is no cash payment.")
+        elif key == "volume_increase":
+            question = PracticeQuestion("What is the additional variable production cost? Enter a positive dollar amount.", -mgr.cash_flow_future,
+                "Additional units × variable cost per unit. Total fixed overhead is unchanged; profit cannot be determined without a selling price.")
+        prompt = {
+            "r_and_d": "Which lens helps decide whether today's research payment should influence next quarter's go/no-go decision?",
+            "allowance_doubtful": "Which lens helps management evaluate the expected collection loss from extending credit?",
+        }.get(key, "Which lens best explains the management issue described? More than one lens may be defensible.")
+        secondary = {"r_and_d": ("Incremental Analysis",), "allowance_doubtful": ("Working Capital & Liquidity", "Cash vs. Accrual Timing"),
+                     "credit_sale": ("Working Capital & Liquidity",), "unearned_revenue": ("Working Capital & Liquidity",),
+                     "deferred_subscription": ("Working Capital & Liquidity",), "inventory_purchase": ("Cash vs. Accrual Timing",),
+                     "accrued_wages": ("Working Capital & Liquidity",), "prepaid_insurance": ("Working Capital & Liquidity",),
+                     "automation_tradeoff": ("Incremental Analysis",), "volume_increase": ("Incremental Analysis",)}.get(key, ())
+        return replace(scenario, practice=question, lens_prompt=prompt, secondary_lenses=secondary,
+            financial=replace(fin, future_period=periods[key]),
+            managerial=replace(mgr, future_cash_label=cash_labels[key]))
 
     def _money(self, value: float) -> str:
-        return f"${value:,.0f}"
+        return f"{'-' if value < 0 else ''}${abs(value):,.2f}"
 
     # ------------------------------------------------------------------
     # Cash vs. Accrual Timing
@@ -302,7 +433,7 @@ class AccountingScenarioEngine:
             scenario_text=(
                 f"A regional home builder just wired Halcyon {self._money(prepayment)} upfront "
                 f"to lock in a {months}-month custom millwork supply agreement starting next month. "
-                f"The cash is in the bank, but Dana tells Ray she can't book it as revenue yet — "
+                f"Assume equal service is delivered each month and focus on revenue recognition, excluding delivery costs. The cash is in the bank, but Dana tells Ray she can't book it as revenue yet — "
                 f"Ray wants to understand why."
             ),
             is_decision_scenario=False,
@@ -409,7 +540,7 @@ class AccountingScenarioEngine:
                 f"A national retail chain just paid Halcyon {self._money(cash)} upfront for a "
                 f"{months}-month preferred supply and design consultation arrangement. "
                 f"Ray is thrilled about the cash; Dana reminds him the P&L won't reflect it "
-                f"all at once — and explains what the books actually show today."
+                f"all at once — and explains what the books actually show today. Assume equal service each month and focus on revenue recognition, excluding delivery costs."
             ),
             is_decision_scenario=False,
             focal_account=FocalAccount(
@@ -519,7 +650,7 @@ class AccountingScenarioEngine:
                 f"accounts payable with terms {int(discount_rate * 100)}/10 net 30 — pay within "
                 f"10 days and Halcyon saves {self._money(discount)}, or wait the full 30 days and "
                 f"pay in full. Ray asks Beth to run the numbers; they decide to pay early today. "
-                f"Dana needs to record the settlement."
+                f"Dana needs to record the settlement. Assume a perpetual inventory system, gross recording of the invoice, and that the goods remain unsold."
             ),
             is_decision_scenario=False,
             focal_account=FocalAccount(
@@ -536,7 +667,7 @@ class AccountingScenarioEngine:
                 today_journal_entry=[
                     JournalEntryLine("Accounts Payable", "Liability", "Debit", invoice),
                     JournalEntryLine("Cash", "Asset", "Credit", net_payment),
-                    JournalEntryLine("Purchase Discounts", "Contra-Expense", "Credit", discount),
+                    JournalEntryLine("Inventory", "Asset", "Credit", discount),
                 ],
                 today_net_income_impact=0.0,
                 today_summary=(
@@ -544,8 +675,8 @@ class AccountingScenarioEngine:
                     "cost basis rather than creating immediate income."
                 ),
                 future_journal_preview=[],
-                future_net_income_impact=0.0,
-                future_summary="No future entries — the obligation is fully settled today.",
+                future_net_income_impact=discount,
+                future_summary="The invoice is settled. When these goods sell, the lower inventory basis reduces COGS by the discount versus paying in full; sales proceeds and timing are not specified.",
             ),
             managerial=ManagerialImpact(
                 primary_metric="Working Capital & Liquidity",
@@ -553,13 +684,13 @@ class AccountingScenarioEngine:
                 metric_value=(
                     f"Cash out today: {self._money(net_payment)} | "
                     f"Discount captured: {self._money(discount)} | "
-                    f"Annualized return: ~{int(discount_rate * (365 / 20) * 100)}%"
+                    f"Annualized return: ~{int((discount_rate / (1 - discount_rate)) * (365 / 20) * 100)}%"
                 ),
                 cash_flow_today=-net_payment,
                 cash_flow_future=0.0,
                 decision_note=(
                     f"Capturing a {int(discount_rate * 100)}% discount for paying 20 days early "
-                    f"is equivalent to an annualized return of ~{int(discount_rate * (365 / 20) * 100)}%. "
+                    f"is equivalent to an annualized return of ~{int((discount_rate / (1 - discount_rate)) * (365 / 20) * 100)}%. "
                     "Almost always worth taking unless liquidity is critically tight."
                 ),
             ),
@@ -617,9 +748,9 @@ class AccountingScenarioEngine:
             managerial=ManagerialImpact(
                 primary_metric="Incremental Analysis",
                 lens_definition=LENS_DEFINITIONS["Incremental Analysis"],
-                metric_value=f"Expected incremental loss from credit sales: {self._money(estimate)}",
+                metric_value=f"Expected collection shortfall: {self._money(estimate)} | Expected collections: {self._money(credit_sales - estimate)}",
                 cash_flow_today=0.0,
-                cash_flow_future=-estimate,
+                cash_flow_future=0.0,
                 decision_note=(
                     "This estimate is the incremental cost of extending credit. "
                     "It informs whether credit terms should be tightened, which customers need "
@@ -631,7 +762,7 @@ class AccountingScenarioEngine:
 
     def _special_order_decision(self) -> ScenarioResult:
         units = self._rng.choice([800, 1000, 1400])
-        offer_price = self._rng.choice([22, 24, 26])
+        offer_price = self._rng.choice([14, 18, 22, 26])
         variable_cost = self._rng.choice([14, 16, 18])
         contribution_per_unit = offer_price - variable_cost
         total_contribution = units * contribution_per_unit
@@ -645,7 +776,7 @@ class AccountingScenarioEngine:
                 f"a buyer that doesn't compete with any of Halcyon's existing retail accounts. "
                 f"Variable cost per unit is ${variable_cost}. Priya confirms the floor has idle "
                 f"capacity and fixed overhead is fully absorbed by the current production run. "
-                f"Ray and Cal are deciding whether to accept. No contract has been signed yet."
+                f"Ray and Cal are deciding whether to accept. Assume variable costs are cash costs, receipts and payments occur over the order, and there are no other incremental costs. No contract has been signed yet."
             ),
             is_decision_scenario=True,
             focal_account=FocalAccount(
@@ -675,10 +806,10 @@ class AccountingScenarioEngine:
                 lens_definition=LENS_DEFINITIONS["Incremental Analysis"],
                 metric_value=f"Incremental contribution if accepted: {self._money(total_contribution)}",
                 cash_flow_today=0.0,
-                cash_flow_future=units * offer_price,
+                cash_flow_future=total_contribution,
                 decision_note=(
                     "Fixed costs are irrelevant here — they don't change with this order. "
-                    "Positive incremental contribution means accepting adds to profit, "
+                    "Accept for positive incremental contribution, reject for negative contribution, and be financially indifferent at zero, "
                     "provided spare capacity exists and regular customers aren't undercut."
                 ),
             ),
@@ -710,7 +841,7 @@ class AccountingScenarioEngine:
                 f"{self._money(avoidable_fixed)} could be eliminated if the line shuts down. "
                 f"An offshore supplier quoted Beth ${buy_price}/unit delivered. "
                 f"Priya and Ray are running the numbers before bringing a recommendation to ownership. "
-                f"No decision has been made and no contract is in place."
+                f"Assume all relevant costs are cash costs, supplier quality and capacity are equivalent, and there is no alternative use for the released capacity. No decision has been made and no contract is in place."
             ),
             is_decision_scenario=True,
             focal_account=FocalAccount(
@@ -793,7 +924,7 @@ class AccountingScenarioEngine:
                 today_summary="Under GAAP, most internal research spending is expensed as incurred — no capitalization.",
                 future_journal_preview=[],
                 future_net_income_impact=0.0,
-                future_summary="No automatic future entry unless separate development milestones are reached.",
+                future_summary="No further entry arises from this payment. Any future research or development spending requires its own assessment under the applicable accounting rules.",
             ),
             managerial=ManagerialImpact(
                 primary_metric="Cost Behavior",
@@ -823,7 +954,7 @@ class AccountingScenarioEngine:
             scenario_text=(
                 f"Priya has been pushing for an automated edge-banding machine to replace a "
                 f"manual finishing station — {self._money(equipment_cost)} capital cost, "
-                f"{useful_life}-year life, and Priya estimates it eliminates "
+                f"{useful_life}-year life with zero salvage value and straight-line depreciation, and Priya estimates it eliminates "
                 f"{self._money(annual_labor_saved)} in annual variable labour. "
                 f"Ray approved it; the wire went out today. Dana is recording the purchase. "
                 f"Ray wants to understand how the cost structure of the finishing operation "
@@ -854,7 +985,7 @@ class AccountingScenarioEngine:
                 future_net_income_impact=annual_labor_saved - annual_dep,
                 future_summary=(
                     f"Annual depreciation of {self._money(annual_dep)} replaces {self._money(annual_labor_saved)} "
-                    f"in variable labor cost, for a net income improvement of {self._money(net_annual_impact)} per year."
+                    f"in variable labor cost, for an annual operating-income {'increase' if net_annual_impact >= 0 else 'decrease'} of {self._money(abs(net_annual_impact))} at the assumed output."
                 ),
             ),
             managerial=ManagerialImpact(
@@ -868,8 +999,7 @@ class AccountingScenarioEngine:
                 cash_flow_future=annual_labor_saved,
                 decision_note=(
                     "This trade converts variable labor cost (scales with output) into fixed depreciation "
-                    "(unchanged regardless of volume). At high volumes, fixed cost per unit falls — "
-                    "automation wins. At low volumes, the fixed charge is harder to absorb."
+                    "(unchanged within the relevant range). At higher volumes, fixed cost per unit falls. Investment value still depends on cash savings, volume, and the cost of capital; a positive accounting result alone does not establish that automation pays off."
                 ),
             ),
             misconception_note=(
@@ -897,7 +1027,7 @@ class AccountingScenarioEngine:
                 f"Priya says the floor can handle it without adding a shift. Current month's "
                 f"run is {current_units:,} units; adding {additional_units:,} more is on the table. "
                 f"Fixed overhead is {self._money(fixed_costs)} per month and won't move either way. "
-                f"Variable cost is ${variable_cost_per_unit}/unit. Ray asks Priya what this "
+                f"Variable cost is ${variable_cost_per_unit}/unit, paid in cash when incurred. Ray asks Priya what this "
                 f"actually does to the unit cost before they agree to a price. No order is confirmed yet."
             ),
             is_decision_scenario=True,
@@ -918,31 +1048,31 @@ class AccountingScenarioEngine:
                 today_net_income_impact=0.0,
                 today_summary="No journal entry until production runs and costs are incurred.",
                 future_journal_preview=[
-                    JournalEntryLine("Work in Process Inventory", "Asset", "Debit", variable_cost_per_unit * new_units),
-                    JournalEntryLine("Accounts Payable / Cash", "Liability", "Credit", variable_cost_per_unit * new_units),
+                    JournalEntryLine("Work in Process Inventory", "Asset", "Debit", variable_cost_per_unit * additional_units),
+                    JournalEntryLine("Cash", "Asset", "Credit", variable_cost_per_unit * additional_units),
                 ],
-                future_net_income_impact=round(fixed_saving_per_unit * new_units, 2),
+                future_net_income_impact=None,
                 future_summary=(
-                    f"When goods sell, the fixed cost dilution saves "
-                    f"{self._money(round(fixed_saving_per_unit * new_units, 2))} vs. the previous "
-                    f"volume level — variable costs of {self._money(variable_cost_per_unit * new_units)} "
-                    f"flow through COGS."
+                    "Lower allocated fixed cost per unit is not a reduction in total fixed cost. "
+                    f"Additional variable production cost is {self._money(variable_cost_per_unit * additional_units)}. "
+                    "The journal previews only these additional cash costs; fixed-overhead allocation is omitted. "
+                    "Profit cannot be calculated without selling price and sales assumptions."
                 ),
             ),
             managerial=ManagerialImpact(
                 primary_metric="Cost Behavior",
                 lens_definition=LENS_DEFINITIONS["Cost Behavior"],
                 metric_value=(
-                    f"Fixed cost/unit now: {self._money(current_fixed_per_unit)} | "
-                    f"Fixed cost/unit at new volume: {self._money(new_fixed_per_unit)} | "
-                    f"Saving: {self._money(fixed_saving_per_unit)}/unit"
+                    f"Fixed cost/unit now: ${current_fixed_per_unit:,.2f} | "
+                    f"Fixed cost/unit at new volume: ${new_fixed_per_unit:,.2f} | "
+                    f"Allocation decrease: ${fixed_saving_per_unit:,.2f}/unit (total fixed overhead unchanged)"
                 ),
                 cash_flow_today=0.0,
                 cash_flow_future=-(variable_cost_per_unit * additional_units),
                 decision_note=(
                     f"Fixed costs don't change — adding {additional_units:,} units dilutes the fixed "
                     f"overhead per unit by {self._money(fixed_saving_per_unit)}. "
-                    "Only the incremental variable cost of the extra units matters for the go/no-go."
+                    "Compare incremental sales receipts with additional variable costs for the go/no-go; the selling price is not yet specified."
                 ),
             ),
             misconception_note=(
@@ -963,3 +1093,15 @@ def journal_line_to_dict(line: JournalEntryLine) -> Dict[str, str | float]:
         "Direction": line.direction,
         "Amount": line.amount,
     }
+
+
+def grade_answers(scenario: ScenarioResult, answers: dict) -> dict[str, bool]:
+    """Grade a submitted attempt without changing it or any progress state."""
+    focal = scenario.focal_account
+    financial = (answers.get("entry") == "No — this is a decision, not yet a transaction") if scenario.is_decision_scenario else (
+        answers.get("direction") == focal.correct_direction and
+        answers.get("movement") == ("Increases" if focal.increases else "Decreases"))
+    lens = answers.get("lens") in (scenario.managerial.primary_metric, *scenario.secondary_lenses)
+    value = answers.get("practice")
+    practice = scenario.practice is not None and value is not None and abs(value - scenario.practice.answer) <= 0.01
+    return {"financial": financial, "lens": lens, "practice": practice}
