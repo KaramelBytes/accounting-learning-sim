@@ -69,16 +69,18 @@ Built by an MBA student with a background in IT, this tool was created to bridge
 
 ## How the learner flow works
 
-1. Select a topic or leave random practice selected, then generate a scenario.
+1. Click **Start practicing**, or select a topic in the sidebar and generate a scenario.
 2. Make an accounting guess:
    - Transaction scenarios: choose debit/credit direction and whether the focal account increases or decreases.
    - Decision scenarios: decide whether a journal entry exists today.
 3. Choose a managerial lens and answer the numerical practice question. Enter cash outflows and adverse income changes as negative numbers when prompted; round calculations to cents.
 4. Reveal analysis. All questions must be answered; submissions lock and are scored once. The lens badge appears after reveal. You will see:
+   - A compact profit-versus-cash comparison with explicit future periods
    - Guess feedback, a calculation formula and worked result, and teaching notes
+   - Your saved answers in a collapsed, read-only review section
    - The Auditor's View: journal lines and before-tax income effects, including conditional future results even when no journal preview is available
    - The CFO's View: lens rationale, metric output, and event-specific cash timing
-5. Generate another scenario to begin a fresh attempt; topic coverage counts submitted topics, not mastery.
+5. Click **Next scenario** after the analysis to begin a fresh attempt using the selected topic; topic coverage counts submitted topics, not mastery.
 
 ## Accounting scope and assumptions
 
@@ -120,7 +122,22 @@ With dependencies installed, run:
 python -m unittest discover -s tests -v
 ```
 
-The suite checks scenario calculations and balanced entries, answer variety, positive/negative/zero special orders, and Streamlit learner flows across all 14 topics. UI checks cover answer concealment, future-result visibility, input validation, locked submissions, and session scoring. They do not assess browser layout or mobile appearance.
+The suite checks scenario calculations and balanced entries, answer variety, positive/negative/zero special orders, and Streamlit learner flows across all 14 topics. UI checks cover answer concealment, future-result visibility, input validation, locked submissions, and session scoring. These component tests do not assess browser layout; use the separate Chromium checks below.
+
+For browser regression checks, install the optional tooling:
+
+```bash
+pip install playwright
+python -m playwright install chromium
+```
+
+With the app running locally in another terminal, run:
+
+```bash
+python tests/browser_review.py --url http://127.0.0.1:8501 --output /tmp/accounting-layout-review
+```
+
+This checks desktop (1440px), tablet (768px), and phone (390px and 320px) layouts. It checks all 14 pre-reveal narratives and exercises decision and transaction flows, currency rendering, label and caption contrast, grouped panels, narrow journal tables, saved submissions, and next-scenario navigation. Screenshots and a JSON result summary are saved in the output directory. Browser emulation does not replace testing on physical devices or other browser engines.
 
 The engine also accepts a deterministic seed for reproducible exercises in code: `AccountingScenarioEngine(seed=42)`. There is no instructor seed control in the UI.
 
